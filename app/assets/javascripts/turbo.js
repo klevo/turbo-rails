@@ -4141,10 +4141,10 @@ class Session {
       this.navigator.proposeVisit(expandURL(location), options);
     }
   }
-  refresh(url, requestId) {
+  refresh(requestId) {
     const isRecentRequest = requestId && this.recentRequests.has(requestId);
     if (!isRecentRequest) {
-      this.visit(url, {
+      this.visit(window.location.href, {
         action: "replace",
         shouldCacheSnapshot: false
       });
@@ -4950,6 +4950,69 @@ function activateElement(element, currentURL) {
   }
 }
 
+function morph(streamElement) {
+  const morphStyle = streamElement.hasAttribute("children-only") ? "innerHTML" : "outerHTML";
+  streamElement.targetElements.forEach((element => {
+    Idiomorph.morph(element, streamElement.templateContent, {
+      morphStyle: morphStyle,
+      callbacks: {
+        beforeNodeAdded: beforeNodeAdded,
+        beforeNodeMorphed: beforeNodeMorphed,
+        beforeAttributeUpdated: beforeAttributeUpdated,
+        beforeNodeRemoved: beforeNodeRemoved,
+        afterNodeMorphed: afterNodeMorphed
+      }
+    });
+  }));
+}
+
+function beforeNodeAdded(node) {
+  return !(node.id && node.hasAttribute("data-turbo-permanent") && document.getElementById(node.id));
+}
+
+function beforeNodeRemoved(node) {
+  return beforeNodeAdded(node);
+}
+
+function beforeNodeMorphed(target, newElement) {
+  if (target instanceof HTMLElement) {
+    if (!target.hasAttribute("data-turbo-permanent")) {
+      const event = dispatch("turbo:before-morph-element", {
+        cancelable: true,
+        target: target,
+        detail: {
+          newElement: newElement
+        }
+      });
+      return !event.defaultPrevented;
+    }
+    return false;
+  }
+}
+
+function beforeAttributeUpdated(attributeName, target, mutationType) {
+  const event = dispatch("turbo:before-morph-attribute", {
+    cancelable: true,
+    target: target,
+    detail: {
+      attributeName: attributeName,
+      mutationType: mutationType
+    }
+  });
+  return !event.defaultPrevented;
+}
+
+function afterNodeMorphed(target, newElement) {
+  if (newElement instanceof HTMLElement) {
+    dispatch("turbo:morph-element", {
+      target: target,
+      detail: {
+        newElement: newElement
+      }
+    });
+  }
+}
+
 const StreamActions = {
   after() {
     this.targetElements.forEach((e => e.parentElement?.insertBefore(this.templateContent, e.nextSibling)));
@@ -4978,7 +5041,10 @@ const StreamActions = {
     }));
   },
   refresh() {
-    session.refresh(this.baseURI, this.requestId);
+    session.refresh(this.requestId);
+  },
+  morph() {
+    morph(this);
   }
 };
 

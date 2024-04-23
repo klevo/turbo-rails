@@ -4141,10 +4141,11 @@ class Session {
       this.navigator.proposeVisit(expandURL(location), options);
     }
   }
-  refresh(requestId) {
+  refresh(url, requestId) {
     const isRecentRequest = requestId && this.recentRequests.has(requestId);
-    if (!isRecentRequest) {
-      this.visit(window.location.href, {
+    const isCurrentUrl = url === document.baseURI;
+    if (!isRecentRequest && isCurrentUrl) {
+      this.visit(url, {
         action: "replace",
         shouldCacheSnapshot: false
       });
@@ -5041,7 +5042,7 @@ const StreamActions = {
     }));
   },
   refresh() {
-    session.refresh(this.requestId);
+    session.refresh(this.baseURI, this.requestId);
   },
   morph() {
     morph(this);

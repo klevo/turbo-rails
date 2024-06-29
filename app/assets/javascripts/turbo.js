@@ -1307,14 +1307,14 @@ class LinkInterceptor {
     document.removeEventListener("turbo:before-visit", this.willVisit);
   }
   clickBubbled=event => {
-    if (this.respondsToEventTarget(event.target)) {
+    if (this.clickEventIsSignificant(event)) {
       this.clickEvent = event;
     } else {
       delete this.clickEvent;
     }
   };
   linkClicked=event => {
-    if (this.clickEvent && this.respondsToEventTarget(event.target) && event.target instanceof Element) {
+    if (this.clickEvent && this.clickEventIsSignificant(event)) {
       if (this.delegate.shouldInterceptLinkClick(event.target, event.detail.url, event.detail.originalEvent)) {
         this.clickEvent.preventDefault();
         event.preventDefault();
@@ -1326,9 +1326,10 @@ class LinkInterceptor {
   willVisit=_event => {
     delete this.clickEvent;
   };
-  respondsToEventTarget(target) {
-    const element = target instanceof Element ? target : target instanceof Node ? target.parentElement : null;
-    return element && element.closest("turbo-frame, html") == this.element;
+  clickEventIsSignificant(event) {
+    const target = event.composed ? event.target?.parentElement : event.target;
+    const element = findLinkFromClickTarget(target) || target;
+    return element instanceof Element && element.closest("turbo-frame, html") == this.element;
   }
 }
 
@@ -1496,6 +1497,9 @@ class Renderer {
   get shouldRender() {
     return true;
   }
+  get shouldAutofocus() {
+    return true;
+  }
   get reloadReason() {
     return;
   }
@@ -1513,9 +1517,11 @@ class Renderer {
     await Bardo.preservingPermanentElements(this, this.permanentElementMap, callback);
   }
   focusFirstAutofocusableElement() {
-    const element = this.connectedSnapshot.firstAutofocusableElement;
-    if (element) {
-      element.focus();
+    if (this.shouldAutofocus) {
+      const element = this.connectedSnapshot.firstAutofocusableElement;
+      if (element) {
+        element.focus();
+      }
     }
   }
   enteringBardo(currentPermanentElement) {
@@ -2798,6 +2804,7 @@ class Navigator {
   }
   visitCompleted(visit) {
     this.delegate.visitCompleted(visit);
+    delete this.currentVisit;
   }
   locationWithActionIsSamePage(location, action) {
     const anchor = getAnchor(location);
@@ -3803,6 +3810,9 @@ class MorphRenderer extends PageRenderer {
   get renderMethod() {
     return "morph";
   }
+  get shouldAutofocus() {
+    return false;
+  }
   async #morphBody() {
     this.#morphElements(this.currentElement, this.newElement);
     this.#reloadRemoteFrames();
@@ -3950,7 +3960,7 @@ class PageView extends View {
     return this.snapshot.prefersViewTransitions && newSnapshot.prefersViewTransitions;
   }
   renderPage(snapshot, isPreview = false, willRender = true, visit) {
-    const shouldMorphPage = this.isPageRefresh(visit) && this.snapshot.shouldMorphPage;
+    const shouldMorphPage = this.isPageRefresh(visit) && snapshot.shouldMorphPage;
     const rendererClass = shouldMorphPage ? MorphRenderer : PageRenderer;
     const renderer = new rendererClass(this.snapshot, snapshot, PageRenderer.renderElement, isPreview, willRender);
     if (!renderer.shouldRender) {
@@ -4143,7 +4153,8 @@ class Session {
   }
   refresh(url, requestId) {
     const isRecentRequest = requestId && this.recentRequests.has(requestId);
-    if (!isRecentRequest) {
+    const isCurrentUrl = url === document.baseURI;
+    if (!isRecentRequest && !this.navigator.currentVisit && isCurrentUrl) {
       this.visit(url, {
         action: "replace",
         shouldCacheSnapshot: false
@@ -4950,6 +4961,69 @@ function activateElement(element, currentURL) {
   }
 }
 
+function morph(streamElement) {
+  const morphStyle = streamElement.hasAttribute("children-only") ? "innerHTML" : "outerHTML";
+  streamElement.targetElements.forEach((element => {
+    Idiomorph.morph(element, streamElement.templateContent, {
+      morphStyle: morphStyle,
+      callbacks: {
+        beforeNodeAdded: beforeNodeAdded,
+        beforeNodeMorphed: beforeNodeMorphed,
+        beforeAttributeUpdated: beforeAttributeUpdated,
+        beforeNodeRemoved: beforeNodeRemoved,
+        afterNodeMorphed: afterNodeMorphed
+      }
+    });
+  }));
+}
+
+function beforeNodeAdded(node) {
+  return !(node.id && node.hasAttribute("data-turbo-permanent") && document.getElementById(node.id));
+}
+
+function beforeNodeRemoved(node) {
+  return beforeNodeAdded(node);
+}
+
+function beforeNodeMorphed(target, newElement) {
+  if (target instanceof HTMLElement) {
+    if (!target.hasAttribute("data-turbo-permanent")) {
+      const event = dispatch("turbo:before-morph-element", {
+        cancelable: true,
+        target: target,
+        detail: {
+          newElement: newElement
+        }
+      });
+      return !event.defaultPrevented;
+    }
+    return false;
+  }
+}
+
+function beforeAttributeUpdated(attributeName, target, mutationType) {
+  const event = dispatch("turbo:before-morph-attribute", {
+    cancelable: true,
+    target: target,
+    detail: {
+      attributeName: attributeName,
+      mutationType: mutationType
+    }
+  });
+  return !event.defaultPrevented;
+}
+
+function afterNodeMorphed(target, newElement) {
+  if (newElement instanceof HTMLElement) {
+    dispatch("turbo:morph-element", {
+      target: target,
+      detail: {
+        newElement: newElement
+      }
+    });
+  }
+}
+
 const StreamActions = {
   after() {
     this.targetElements.forEach((e => e.parentElement?.insertBefore(this.templateContent, e.nextSibling)));
@@ -4979,6 +5053,9 @@ const StreamActions = {
   },
   refresh() {
     session.refresh(this.baseURI, this.requestId);
+  },
+  morph() {
+    morph(this);
   }
 };
 

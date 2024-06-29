@@ -1307,14 +1307,14 @@ class LinkInterceptor {
     document.removeEventListener("turbo:before-visit", this.willVisit);
   }
   clickBubbled=event => {
-    if (this.respondsToEventTarget(event.target)) {
+    if (this.clickEventIsSignificant(event)) {
       this.clickEvent = event;
     } else {
       delete this.clickEvent;
     }
   };
   linkClicked=event => {
-    if (this.clickEvent && this.respondsToEventTarget(event.target) && event.target instanceof Element) {
+    if (this.clickEvent && this.clickEventIsSignificant(event)) {
       if (this.delegate.shouldInterceptLinkClick(event.target, event.detail.url, event.detail.originalEvent)) {
         this.clickEvent.preventDefault();
         event.preventDefault();
@@ -1326,9 +1326,10 @@ class LinkInterceptor {
   willVisit=_event => {
     delete this.clickEvent;
   };
-  respondsToEventTarget(target) {
-    const element = target instanceof Element ? target : target instanceof Node ? target.parentElement : null;
-    return element && element.closest("turbo-frame, html") == this.element;
+  clickEventIsSignificant(event) {
+    const target = event.composed ? event.target?.parentElement : event.target;
+    const element = findLinkFromClickTarget(target) || target;
+    return element instanceof Element && element.closest("turbo-frame, html") == this.element;
   }
 }
 
@@ -1496,6 +1497,9 @@ class Renderer {
   get shouldRender() {
     return true;
   }
+  get shouldAutofocus() {
+    return true;
+  }
   get reloadReason() {
     return;
   }
@@ -1513,9 +1517,11 @@ class Renderer {
     await Bardo.preservingPermanentElements(this, this.permanentElementMap, callback);
   }
   focusFirstAutofocusableElement() {
-    const element = this.connectedSnapshot.firstAutofocusableElement;
-    if (element) {
-      element.focus();
+    if (this.shouldAutofocus) {
+      const element = this.connectedSnapshot.firstAutofocusableElement;
+      if (element) {
+        element.focus();
+      }
     }
   }
   enteringBardo(currentPermanentElement) {
@@ -2798,6 +2804,7 @@ class Navigator {
   }
   visitCompleted(visit) {
     this.delegate.visitCompleted(visit);
+    delete this.currentVisit;
   }
   locationWithActionIsSamePage(location, action) {
     const anchor = getAnchor(location);
@@ -3803,6 +3810,9 @@ class MorphRenderer extends PageRenderer {
   get renderMethod() {
     return "morph";
   }
+  get shouldAutofocus() {
+    return false;
+  }
   async #morphBody() {
     this.#morphElements(this.currentElement, this.newElement);
     this.#reloadRemoteFrames();
@@ -3950,7 +3960,7 @@ class PageView extends View {
     return this.snapshot.prefersViewTransitions && newSnapshot.prefersViewTransitions;
   }
   renderPage(snapshot, isPreview = false, willRender = true, visit) {
-    const shouldMorphPage = this.isPageRefresh(visit) && this.snapshot.shouldMorphPage;
+    const shouldMorphPage = this.isPageRefresh(visit) && snapshot.shouldMorphPage;
     const rendererClass = shouldMorphPage ? MorphRenderer : PageRenderer;
     const renderer = new rendererClass(this.snapshot, snapshot, PageRenderer.renderElement, isPreview, willRender);
     if (!renderer.shouldRender) {
@@ -4144,7 +4154,7 @@ class Session {
   refresh(url, requestId) {
     const isRecentRequest = requestId && this.recentRequests.has(requestId);
     const isCurrentUrl = url === document.baseURI;
-    if (!isRecentRequest && isCurrentUrl) {
+    if (!isRecentRequest && !this.navigator.currentVisit && isCurrentUrl) {
       this.visit(url, {
         action: "replace",
         shouldCacheSnapshot: false
